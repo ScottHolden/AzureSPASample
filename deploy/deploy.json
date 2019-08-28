@@ -1,0 +1,538 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "env": {
+            "type": "string"
+        },
+        "baseName": {
+            "type": "string",
+            "defaultValue": "simple"
+        },
+        "location": {
+            "type": "string",
+            "defaultValue": "[resourceGroup().location]",
+            "metadata": {
+                "description": "Location for all resources."
+            }
+        }
+    },
+    "variables": {
+        "env": "[toLower(parameters('env'))]",
+        "baseName": "[toLower(parameters('baseName'))]",
+        "baseNameShort": "[take(replace(replace(variables('baseName'), '-', ''), '.', ''), 6)]",
+        "entropy": "[uniqueString(resourceGroup().id, variables('env'), 'frontendtemplate')]",
+        "storage": {
+            "name": "[concat(variables('baseNameShort'), 'wwwx', variables('entropy'))]",
+            "ref": { "value":"[resourceId('Microsoft.Storage/storageAccounts', variables('storage').name)]"},
+            "type": "Standard_LRS",
+            "containers": {
+                "cdn": {
+                    "name": "cdnstorage"
+                }
+            }
+        },
+        "frontDoor": {
+            "name": "[concat(variables('baseName'), '-', variables('env'), '-', variables('entropy'))]",
+            "ref": "[resourceId('Microsoft.Network/frontDoors', variables('frontDoor').name)]",
+            "location": "global",
+            "frontEnds": {
+                "default": {
+                    "name": "fdEndpoint",
+                    "ref": "[concat(variables('frontDoor').ref, '/frontendEndpoints/', variables('frontDoor').frontEnds.default.name)]",
+                    "hostName": "[concat(variables('frontDoor').name, '.azurefd.net')]"
+                }
+            },
+            "backEnds": {
+                "storage": {
+                    "name": "storageBackend",
+                    "ref": "[concat(variables('frontDoor').ref, '/backendPools/', variables('frontDoor').backEnds.storage.name)]"
+                },
+                "api": {
+                    "name": "apiBackend",
+                    "ref": "[concat(variables('frontDoor').ref, '/backendPools/', variables('frontDoor').backEnds.api.name)]"
+                }
+            },
+            "loadBalancer": {
+                "default": {
+                    "name": "loadBalance",
+                    "ref": "[concat(variables('frontDoor').ref, '/loadBalancingSettings/', variables('frontDoor').loadBalancer.default.name)]"
+                }
+            },
+            "healthProbes": {
+                "storage": {
+                    "name": "healthProbe",
+                    "ref": "[concat(variables('frontDoor').ref, '/healthProbeSettings/', variables('frontDoor').healthProbes.storage.name)]"
+                },
+                "api": {
+                    "name": "apiHealthProbe",
+                    "ref": "[concat(variables('frontDoor').ref, '/healthProbeSettings/', variables('frontDoor').healthProbes.api.name)]",
+                    "path": "[variables('apim').apis.frontdoor.healthCheckPath]"
+                }
+            }
+        },
+        "waf": {
+            "name": "[concat(variables('baseName'), 'waf', variables('env'))]",
+            "ref": "[resourceId('Microsoft.Network/frontDoorWebApplicationFirewallPolicies', variables('waf').name)]"
+        },
+        "cdn": {
+            "name": "[concat(variables('baseName'), '-cdn-', variables('env'))]",
+            "ref": "[resourceId('microsoft.cdn/profiles', variables('cdn').name)]",
+            "endpoint": {
+                "name": "[concat(variables('cdn').name, '-', variables('entropy'))]",
+                "ref": "[resourceId('microsoft.cdn/profiles/endpoints', variables('cdn').name, variables('cdn').endpoint.name)]"
+            }
+        },
+        "apim": {
+            "name": "[concat(variables('baseName'), '-apim-', variables('env'), '-', variables('entropy'))]",
+            "ref": "[resourceId('Microsoft.ApiManagement/service', variables('apim').name)]",
+            "location": "Australia East",
+            "publisher": {
+                "name": "[concat(variables('baseName'), '-', variables('env'))]",
+                "email": "unknown@nullops.io"
+            },
+            "logger":
+            {
+                "name": "[variables('appIns').name]",
+                "id": "[concat('/loggers/', variables('apim').logger.name)]",
+                "ref": "[concat(variables('apim').ref, variables('apim').logger.id)]"
+            },
+            "properties":
+            {
+                "appIns":
+                {
+                    "name": "[variables('appIns').name]",
+                    "ref": "[concat(variables('apim').ref, '/properties/', variables('apim').properties.appIns.name)]",
+                    "displayName": "[concat('Logger-InstrumentationKey-', variables('apim').properties.appIns.name)]",
+                    "displayRef": "[concat('{{', variables('apim').properties.appIns.displayName, '}}')]"
+                }
+            },
+            "apis":
+            {
+                "frontdoor":
+                {
+                    "name": "frontdoor",
+                    "ref": "[concat(variables('apim').ref, '/apis/', variables('apim').apis.frontdoor.name)]",
+                    "healthCheckName": "healthcheck",
+                    "healthCheckRef": "[concat(variables('apimRef'), '/operations/', variables('apim').apis.frontdoor.healthCheckName)]",
+                    "healthCheckPath": "[concat('/', variables('apim').apis.frontdoor.name, '/', variables('apim').apis.frontdoor.healthCheckName)]"
+                }
+            }
+        },
+        "appIns": {
+            "name": "[concat(variables('baseName'), '-ai-', variables('env'))]",
+            "ref": "[resourceId('microsoft.insights/components', variables('appIns').name)]"
+        },
+        "logAnalytics": {
+            "name": "[concat(variables('baseName'), '-log-', variables('env'), '-', variables('entropy'))]",
+            "ref": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalytics').name)]",
+            "provider":
+            {
+                "name":"loganalytics",
+                "id":"[concat('Microsoft.Insights/', variables('logAnalytics').provider.name)]"
+            }
+        }
+    },
+    "functions": [{
+        "namespace": "util",
+        "members": {
+            "trimHost": {
+                "parameters": [{
+                    "name": "name",
+                    "type": "string"
+                }],
+                "output": {
+                    "type": "string",
+                    "value": "[replace(replace(replace(parameters('name'), 'https:', ''), 'http:', ''), '/', '')]"
+                }
+            }
+        }
+    }],
+    "resources": [{
+            "apiVersion": "2018-11-01",
+            "type": "Microsoft.Storage/storageAccounts",
+            "name": "[variables('storage').name]",
+            "location": "[parameters('location')]",
+            "sku": {
+                "name": "[variables('storage').type]"
+            },
+            "kind": "StorageV2",
+            "properties": {
+                "supportsHttpsTrafficOnly": true
+            },
+            "resources": [{
+                "name": "[concat('default/', variables('storage').containers.cdn.name)]",
+                "type": "blobServices/containers",
+                "apiVersion": "2018-11-01",
+                "dependsOn": [
+                    "[variables('storage').ref.value]"
+                ],
+                "properties": {
+                    "publicAccess": "blob"
+                }
+            }]
+        },
+        {
+            "type": "Microsoft.OperationalInsights/workspaces",
+            "name": "[variables('logAnalytics').name]",
+            "apiVersion": "2015-11-01-preview",
+            "location": "[parameters('location')]",
+            "properties": {
+                "sku": {
+                    "name": "PerGB2018"
+                },
+                "retentionInDays": 30,
+                "features": {
+                    "searchVersion": 1
+                }
+            }
+        },
+        {
+            "apiVersion": "2014-04-01",
+            "name": "[variables('appIns').name]",
+            "type": "Microsoft.Insights/components",
+            "location": "[parameters('location')]",
+            "properties": {
+                "ApplicationId": "[variables('appIns').name]",
+                "Application_Type": "web",
+                "Flow_Type": "Redfield"
+            }
+        },
+        {
+            "apiVersion": "2018-06-01-preview",
+            "type": "Microsoft.ApiManagement/service",
+            "name": "[variables('apim').name]",
+            "location": "[variables('apim').location]",
+            "sku": {
+                "name": "Consumption"
+            },
+            "properties": {
+                "publisherEmail": "[variables('apim').publisher.email]",
+                "publisherName": "[variables('apim').publisher.name]"
+            },
+            "resources": [{
+                    "apiVersion": "2018-06-01-preview",
+                    "type": "properties",
+                    "name": "[variables('apim').properties.appIns.name]",
+                    "dependsOn": [
+                        "[variables('apim').ref]",
+                        "[variables('appIns').ref]"
+                    ],
+                    "properties": {
+                        "displayName": "[variables('apim').properties.appIns.displayName]",
+                        "value": "[reference(variables('appIns').ref).InstrumentationKey]",
+                        "secret": true
+                    }
+                },
+                {
+                    "name": "[variables('appIns').name]",
+                    "type": "loggers",
+                    "apiVersion": "2018-06-01-preview",
+                    "dependsOn": [
+                        "[variables('apim').ref]",
+                        "[variables('apim').properties.appIns.ref]"
+                    ],
+                    "properties": {
+                        "loggerType": "applicationInsights",
+                        "credentials": {
+                            "instrumentationKey": "[variables('apim').properties.appIns.displayRef]"
+                        }
+                    }
+                },
+                {
+                    "type": "diagnostics",
+                    "name": "applicationinsights",
+                    "apiVersion": "2018-06-01-preview",
+                    "properties": {
+                        "alwaysLog": "allErrors",
+                        "loggerId": "[variables('apim').logger.id]",
+                        "sampling": {
+                            "samplingType": "fixed",
+                            "percentage": 50
+                        },
+                        "enableHttpCorrelationHeaders": false
+                    },
+                    "dependsOn": [
+                        "[variables('apim').ref]",
+                        "[variables('apim').logger.ref]"
+                    ]
+                },
+                {
+                    "type": "apis",
+                    "apiVersion": "2018-06-01-preview",
+                    "name": "[variables('apim').apis.frontdoor.name]",
+                    "dependsOn": [
+                        "[variables('apim').ref]"
+                    ],
+                    "properties": {
+                        "displayName": "[variables('apim').apis.frontdoor.name]",
+                        "apiRevision": "1",
+                        "description": "Front Door Helpers",
+                        "subscriptionRequired": false,
+                        "path": "[variables('apim').apis.frontdoor.name]",
+                        "protocols": [
+                            "https"
+                        ]
+                    },
+                    "resources": [{
+                        "type": "operations",
+                        "apiVersion": "2018-06-01-preview",
+                        "name": "[variables('apim').apis.frontdoor.healthCheckName]",
+                        "dependsOn": [
+                            "[variables('apim').apis.frontdoor.ref]"
+                        ],
+                        "properties": {
+                            "displayName": "[variables('apim').apis.frontdoor.healthCheckName]",
+                            "method": "GET",
+                            "urlTemplate": "[concat('/', variables('apim').apis.frontdoor.healthCheckName)]",
+                            "description": "Basic Health Check",
+                            "responses": [{
+                                "statusCode": 200,
+                                "representations": [{
+                                    "contentType": "application/json",
+                                    "sample": "{\"ok\":200}"
+                                }]
+                            }]
+                        },
+                        "resources": [{
+                            "type": "policies",
+                            "apiVersion": "2018-06-01-preview",
+                            "name": "policy",
+                            "dependsOn": [
+                                "[variables('apim').apis.frontdoor.healthCheckRef]"
+                            ],
+                            "properties": {
+                                "policyContent": "<policies><inbound><base /><mock-response status-code=\"200\" content-type=\"application/json\" /></inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>",
+                                "contentFormat": "xml"
+                            }
+                        }]
+                    }]
+                }
+            ]
+        },
+        {
+            "apiVersion": "2018-04-02",
+            "type": "microsoft.cdn/profiles",
+            "name": "[variables('cdn').name]",
+            "location": "[parameters('location')]",
+            "sku": {
+                "name": "Standard_Microsoft"
+            },
+            "properties": {},
+            "resources": [{
+                "apiVersion": "2018-04-02",
+                "type": "endpoints",
+                "name": "[variables('cdn').endpoint.name]",
+                "location": "[parameters('location')]",
+                "dependsOn": [
+                    "[variables('cdn').ref]",
+                    "[variables('storage').ref.value]"
+                ],
+                "properties": {
+                    "originHostHeader": "[util.trimHost(reference(variables('storage').name).primaryEndpoints.blob)]",
+                    "isHttpAllowed": false,
+                    "isHttpsAllowed": true,
+                    "queryStringCachingBehavior": "IgnoreQueryString",
+                    "contentTypesToCompress": [
+                        "text/plain",
+                        "text/html",
+                        "text/css",
+                        "application/x-javascript",
+                        "text/javascript"
+                    ],
+                    "isCompressionEnabled": true,
+                    "originPath": "[concat('/', variables('storage').containers.cdn.name)]",
+                    "origins": [{
+                        "name": "storage",
+                        "properties": {
+                            "hostName": "[util.trimHost(reference(variables('storage').name).primaryEndpoints.blob)]"
+                        }
+                    }]
+                }
+            }]
+        },
+        {
+            "apiVersion": "2019-03-01",
+            "type": "Microsoft.Network/frontDoorWebApplicationFirewallPolicies",
+            "name": "[variables('waf').name]",
+            "location": "[variables('frontdoor').location]",
+            "tags": {},
+            "properties": {
+                "policySettings": {
+                    "enabledState": "Enabled",
+                    "mode": "Prevention"
+                },
+                "customRules": {
+                    "rules": []
+                },
+                "managedRules": {
+                    "managedRuleSets": [{
+                        "ruleSetType": "DefaultRuleSet",
+                        "ruleSetVersion": "preview-0.1",
+                        "ruleGroupOverrides": []
+                    }]
+                }
+            }
+        },
+        {
+            "apiVersion": "2019-04-01",
+            "type": "Microsoft.Network/frontDoors",
+            "name": "[variables('frontDoor').name]",
+            "location": "[variables('frontdoor').location]",
+            "dependsOn": [
+                "[variables('storage').ref.value]",
+                "[variables('waf').ref]"
+            ],
+            "properties": {
+                "routingRules": [{
+                        "name": "HttpsOnly",
+                        "properties": {
+                            "frontendEndpoints": [{
+                                "id": "[variables('frontDoor').frontEnds.default.ref]"
+                            }],
+                            "acceptedProtocols": [
+                                "Http"
+                            ],
+                            "patternsToMatch": [
+                                "/*"
+                            ],
+                            "routeConfiguration": {
+                                "@odata.type": "#Microsoft.Azure.FrontDoor.Models.FrontdoorRedirectConfiguration",
+                                "redirectType": "Moved",
+                                "redirectProtocol": "HttpsOnly"
+                            },
+                            "enabledState": "Enabled"
+                        }
+                    },
+                    {
+                        "name": "RouteToStorage",
+                        "properties": {
+                            "frontendEndpoints": [{
+                                "id": "[variables('frontDoor').frontEnds.default.ref]"
+                            }],
+                            "acceptedProtocols": [
+                                "Https"
+                            ],
+                            "patternsToMatch": [
+                                "/*"
+                            ],
+                            "routeConfiguration": {
+                                "@odata.type": "#Microsoft.Azure.FrontDoor.Models.FrontdoorForwardingConfiguration",
+                                "forwardingProtocol": "HttpsOnly",
+                                "backendPool": {
+                                    "id": "[variables('frontDoor').backEnds.storage.ref]"
+                                }
+                            },
+                            "enabledState": "Enabled"
+                        }
+                    },
+                    {
+                        "name": "RouteToApi",
+                        "properties": {
+                            "frontendEndpoints": [{
+                                "id": "[variables('frontDoor').frontEnds.default.ref]"
+                            }],
+                            "acceptedProtocols": [
+                                "Https"
+                            ],
+                            "patternsToMatch": [
+                                "/api/*"
+                            ],
+                            "routeConfiguration": {
+                                "@odata.type": "#Microsoft.Azure.FrontDoor.Models.FrontdoorForwardingConfiguration",
+                                "forwardingProtocol": "HttpsOnly",
+                                "backendPool": {
+                                    "id": "[variables('frontDoor').backEnds.api.ref]"
+                                }
+                            },
+                            "enabledState": "Enabled"
+                        }
+                    }
+                ],
+                "healthProbeSettings": [{
+                        "name": "[variables('frontDoor').healthProbes.storage.name]",
+                        "properties": {
+                            "path": "/frontdoor/healthcheck.json",
+                            "protocol": "Https",
+                            "intervalInSeconds": 240
+                        }
+                    },
+                    {
+                        "name": "[variables('frontDoor').healthProbes.api.name]",
+                        "properties": {
+                            "path": "[variables('frontDoor').healthProbes.api.path]",
+                            "protocol": "Https",
+                            "intervalInSeconds": 240
+                        }
+                    }
+                ],
+                "loadBalancingSettings": [{
+                    "name": "[variables('frontDoor').loadBalancer.default.name]",
+                    "properties": {
+                        "sampleSize": 4,
+                        "successfulSamplesRequired": 2
+                    }
+                }],
+                "backendPools": [{
+                        "name": "[variables('frontDoor').backEnds.storage.name]",
+                        "properties": {
+                            "backends": [{
+                                "address": "[util.trimHost(reference(variables('storage').name).primaryEndpoints.web)]",
+                                "httpPort": 80,
+                                "httpsPort": 443,
+                                "weight": 50,
+                                "priority": 1,
+                                "enabledState": "Enabled",
+                                "backendHostHeader": "[util.trimHost(reference(variables('storage').name).primaryEndpoints.web)]"
+                            }],
+                            "loadBalancingSettings": {
+                                "id": "[variables('frontDoor').loadBalancer.default.ref]"
+                            },
+                            "healthProbeSettings": {
+                                "id": "[variables('frontDoor').healthProbes.storage.ref]"
+                            }
+                        }
+                    },
+                    {
+                        "name": "[variables('frontDoor').backEnds.api.name]",
+                        "properties": {
+                            "backends": [{
+                                "address": "[util.trimHost(reference(variables('apim').name).gatewayUrl)]",
+                                "httpPort": 80,
+                                "httpsPort": 443,
+                                "weight": 50,
+                                "priority": 1,
+                                "enabledState": "Enabled",
+                                "backendHostHeader": "[util.trimHost(reference(variables('apim').name).gatewayUrl)]"
+                            }],
+                            "loadBalancingSettings": {
+                                "id": "[variables('frontDoor').loadBalancer.default.ref]"
+                            },
+                            "healthProbeSettings": {
+                                "id": "[variables('frontDoor').healthProbes.api.ref]"
+                            }
+                        }
+                    }
+                ],
+                "frontendEndpoints": [{
+                    "name": "[variables('frontDoor').frontEnds.default.name]",
+                    "properties": {
+                        "hostName": "[variables('frontDoor').frontEnds.default.hostName]",
+                        "sessionAffinityEnabledState": "Disabled",
+                        "sessionAffinityTtlSeconds": 0,
+                        "webApplicationFirewallPolicyLink": {
+                            "id": "[variables('waf').ref]"
+                        }
+                    }
+                }],
+                "enabledState": "Enabled"
+            }
+        }
+    ],
+    "outputs": {
+        "storageName": {
+            "type": "string",
+            "value": "[variables('storage').name]"
+        }
+    }
+}
