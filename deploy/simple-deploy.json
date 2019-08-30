@@ -213,7 +213,7 @@
                     "managedRuleSets": [
                         {
                             "ruleSetType": "DefaultRuleSet",
-                            "ruleSetVersion": "1.0",
+                            "ruleSetVersion": "preview-0.1",
                             "ruleGroupOverrides": []
                         }
                     ]
