@@ -131,6 +131,7 @@
                     "name": "Microsoft.ApplicationInsights.AzureWebSites",
                     "type": "siteextensions",
                     "dependsOn": [
+                        "web",
                         "[resourceId('Microsoft.Web/Sites', variables('appServiceSpaName'))]"
                     ],
                     "properties": {}
@@ -189,6 +190,7 @@
                     "name": "Microsoft.ApplicationInsights.AzureWebSites",
                     "type": "siteextensions",
                     "dependsOn": [
+                        "web",
                         "[resourceId('Microsoft.Web/Sites', variables('appServiceApiName'))]"
                     ],
                     "properties": {}
